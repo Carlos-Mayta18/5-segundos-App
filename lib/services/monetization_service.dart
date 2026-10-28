@@ -1,20 +1,33 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 
 /// Configuración central de IDs de Google AdMob y Google Play Billing.
-/// Cuando subas tu .aab a Google Play Console y crees tu cuenta de AdMob,
-/// solo debes reemplazar estos IDs de prueba por tus IDs de producción.
+///
+/// IMPORTANTE PARA PASAR A ANUNCIOS REALES:
+/// 1. Crea tu cuenta en https://admob.google.com y registra la app Android.
+/// 2. Reemplaza el APPLICATION_ID en `android/app/src/main/AndroidManifest.xml`.
+/// 3. Reemplaza los 3 AdUnitIds de abajo por los bloques de anuncios creados en tu AdMob.
+/// 4. Agrega el ID de tu teléfono en [testDeviceIds] para que AdMob no suspenda tu cuenta
+///    por hacer clic en tus propios anuncios durante tus pruebas.
 class MonetizationConfig {
-  // IDs de prueba oficiales de Google AdMob para Android
+  // Cambia estos 3 IDs por los tuyos de AdMob cuando quieras usar anuncios propios:
   static const String androidBannerAdUnitId = 'ca-app-pub-3940256099942544/6300978111';
   static const String androidInterstitialAdUnitId = 'ca-app-pub-3940256099942544/1033173712';
   static const String androidRewardedAdUnitId = 'ca-app-pub-3940256099942544/5224354917';
 
+  // Agrega aquí el ID de dispositivo de prueba que aparece en la consola Logcat al correr en tu celular
+  static const List<String> testDeviceIds = <String>[];
+
   // ID del producto de compra única en Google Play Console (Productos integrados)
   static const String proLifetimeProductId = 'reto5_pro_sin_anuncios';
   static const String proPriceDisplay = '\$2.99 USD';
+
+  static bool get isAndroidMobile =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 }
 
 class MonetizationService extends ChangeNotifier {
@@ -27,6 +40,9 @@ class MonetizationService extends ChangeNotifier {
   final Set<String> _sessionUnlockedDecks = {};
   int _completedMatchesCount = 0;
 
+  InterstitialAd? _interstitialAd;
+  RewardedAd? _rewardedAd;
+
   bool get isPro => _isPro;
 
   bool isDeckUnlocked(String deckId, bool isPremiumDeck) {
@@ -38,10 +54,54 @@ class MonetizationService extends ChangeNotifier {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _isPro = prefs.getBool(_prefProKey) ?? false;
+
+    if (MonetizationConfig.isAndroidMobile && !_isPro) {
+      await MobileAds.instance.initialize();
+      if (MonetizationConfig.testDeviceIds.isNotEmpty) {
+        await MobileAds.instance.updateRequestConfiguration(
+          RequestConfiguration(testDeviceIds: MonetizationConfig.testDeviceIds),
+        );
+      }
+      _preloadInterstitialAd();
+      _preloadRewardedAd();
+    }
     notifyListeners();
   }
 
+  void _preloadInterstitialAd() {
+    if (!MonetizationConfig.isAndroidMobile || _isPro) return;
+    InterstitialAd.load(
+      adUnitId: MonetizationConfig.androidInterstitialAdUnitId,
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          _interstitialAd = ad;
+        },
+        onAdFailedToLoad: (error) {
+          _interstitialAd = null;
+        },
+      ),
+    );
+  }
+
+  void _preloadRewardedAd() {
+    if (!MonetizationConfig.isAndroidMobile || _isPro) return;
+    RewardedAd.load(
+      adUnitId: MonetizationConfig.androidRewardedAdUnitId,
+      request: const AdRequest(),
+      rewardedAdLoadCallback: RewardedAdLoadCallback(
+        onAdLoaded: (ad) {
+          _rewardedAd = ad;
+        },
+        onAdFailedToLoad: (error) {
+          _rewardedAd = null;
+        },
+      ),
+    );
+  }
+
   /// Desbloquea un mazo temático prémium viendo un video publicitario corto.
+  /// En Android usa el SDK real de AdMob (`RewardedAd`); en Web o si aún no cargó usa el fallback interactivo.
   Future<bool> showRewardedAdToUnlockDeck(
     BuildContext context, {
     required String deckId,
@@ -49,6 +109,39 @@ class MonetizationService extends ChangeNotifier {
   }) async {
     if (_isPro) return true;
 
+    // 1. Si estamos en Android y el anuncio real de AdMob ya está pre-cargado:
+    if (MonetizationConfig.isAndroidMobile && _rewardedAd != null) {
+      final Completer<bool> completer = Completer<bool>();
+      bool rewardEarned = false;
+
+      _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
+        onAdDismissedFullScreenContent: (ad) {
+          ad.dispose();
+          _rewardedAd = null;
+          _preloadRewardedAd();
+          if (!completer.isCompleted) completer.complete(rewardEarned);
+        },
+        onAdFailedToShowFullScreenContent: (ad, err) {
+          ad.dispose();
+          _rewardedAd = null;
+          _preloadRewardedAd();
+          if (!completer.isCompleted) completer.complete(false);
+        },
+      );
+
+      await _rewardedAd!.show(
+        onUserEarnedReward: (ad, reward) {
+          rewardEarned = true;
+          _sessionUnlockedDecks.add(deckId);
+          notifyListeners();
+        },
+      );
+
+      return completer.future;
+    }
+
+    // 2. En navegador Web o mientras carga la red en desarrollo:
+    if (!context.mounted) return false;
     final bool? watched = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -63,13 +156,32 @@ class MonetizationService extends ChangeNotifier {
     return false;
   }
 
-  /// Muestra anuncio intersticial discreto únicamente entre partidas completas
-  /// (NUNCA durante los turnos activos de 5 segundos).
+  /// Muestra anuncio intersticial discreto únicamente entre partidas completas.
   Future<void> onMatchCompleted(BuildContext context) async {
     if (_isPro) return;
     _completedMatchesCount++;
-    // Mostrar anuncio discreto al finalizar partida
-    if (_completedMatchesCount >= 1 && context.mounted) {
+    if (_completedMatchesCount < 1) return;
+
+    // 1. En Android con AdMob real cargado:
+    if (MonetizationConfig.isAndroidMobile && _interstitialAd != null) {
+      _interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
+        onAdDismissedFullScreenContent: (ad) {
+          ad.dispose();
+          _interstitialAd = null;
+          _preloadInterstitialAd();
+        },
+        onAdFailedToShowFullScreenContent: (ad, err) {
+          ad.dispose();
+          _interstitialAd = null;
+          _preloadInterstitialAd();
+        },
+      );
+      await _interstitialAd!.show();
+      return;
+    }
+
+    // 2. Fallback en Web / Desarrollo:
+    if (context.mounted) {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
@@ -128,7 +240,7 @@ class MonetizationService extends ChangeNotifier {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Google Play Billing (Modo Prueba Activo)\nSKU: ${MonetizationConfig.proLifetimeProductId}',
+                      'Google Play Billing\nSKU: ${MonetizationConfig.proLifetimeProductId}',
                       style: TextStyle(fontSize: 11.5, color: Colors.white70),
                     ),
                   ),
@@ -164,6 +276,10 @@ class MonetizationService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_prefProKey, true);
       _isPro = true;
+      _interstitialAd?.dispose();
+      _rewardedAd?.dispose();
+      _interstitialAd = null;
+      _rewardedAd = null;
       notifyListeners();
       return true;
     }
@@ -176,6 +292,8 @@ class MonetizationService extends ChangeNotifier {
     await prefs.setBool(_prefProKey, false);
     _isPro = false;
     _sessionUnlockedDecks.clear();
+    _preloadInterstitialAd();
+    _preloadRewardedAd();
     notifyListeners();
   }
 
@@ -196,10 +314,58 @@ class MonetizationService extends ChangeNotifier {
   }
 }
 
-/// Widget de Banner Publicitario discreto que solo aparece en pantallas de configuración/menú
-/// y desaparece automáticamente si el usuario adquiere la versión PRO.
-class NonIntrusiveAdBanner extends StatelessWidget {
+/// Widget de Banner Publicitario discreto que en Android renderiza el `BannerAd` real de AdMob
+/// y en Web muestra el banner simulado de vista previa.
+class NonIntrusiveAdBanner extends StatefulWidget {
   const NonIntrusiveAdBanner({super.key});
+
+  @override
+  State<NonIntrusiveAdBanner> createState() => _NonIntrusiveAdBannerState();
+}
+
+class _NonIntrusiveAdBannerState extends State<NonIntrusiveAdBanner> {
+  BannerAd? _bannerAd;
+  bool _isBannerLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRealBannerIfAndroid();
+  }
+
+  void _loadRealBannerIfAndroid() {
+    if (!MonetizationConfig.isAndroidMobile || MonetizationService.instance.isPro) return;
+
+    _bannerAd = BannerAd(
+      adUnitId: MonetizationConfig.androidBannerAdUnitId,
+      size: AdSize.banner,
+      request: const AdRequest(),
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (mounted) {
+            setState(() {
+              _isBannerLoaded = true;
+            });
+          }
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+          if (mounted) {
+            setState(() {
+              _bannerAd = null;
+              _isBannerLoaded = false;
+            });
+          }
+        },
+      ),
+    )..load();
+  }
+
+  @override
+  void dispose() {
+    _bannerAd?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -209,6 +375,19 @@ class NonIntrusiveAdBanner extends StatelessWidget {
         if (MonetizationService.instance.isPro) {
           return const SizedBox.shrink();
         }
+
+        // Si estamos en Android y el Banner real de AdMob ya cargó, lo mostramos nativamente:
+        if (MonetizationConfig.isAndroidMobile && _isBannerLoaded && _bannerAd != null) {
+          return Container(
+            alignment: Alignment.center,
+            width: _bannerAd!.size.width.toDouble(),
+            height: _bannerAd!.size.height.toDouble(),
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            child: AdWidget(ad: _bannerAd!),
+          );
+        }
+
+        // Fallback en navegador Web o mientras carga el banner en Android:
         return Container(
           width: double.infinity,
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -239,7 +418,7 @@ class NonIntrusiveAdBanner extends StatelessWidget {
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
-                  'Google AdMob Test Banner • Pásate a PRO para quitar anuncios',
+                  'Google AdMob Banner • Pásate a PRO para quitar anuncios',
                   style: TextStyle(fontSize: 12, color: Colors.white70),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -352,7 +531,8 @@ class _SimulatedRewardedAdDialogState extends State<_SimulatedRewardedAdDialog> 
           ),
           const SizedBox(height: 12),
           const Text(
-            'ID de Prueba: ${MonetizationConfig.androidRewardedAdUnitId}',
+            'En un celular Android se reproduce el video real de Google AdMob.',
+            textAlign: TextAlign.center,
             style: TextStyle(fontSize: 11, color: Colors.white54),
           ),
         ],
