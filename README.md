@@ -1,9 +1,11 @@
 # ⚡ Reto 5 Segundos — Party Game (Flutter)
 
+[![Flutter CI](https://github.com/Carlos-Mayta18/5-segundos-App/actions/workflows/flutter_ci.yml/badge.svg)](https://github.com/Carlos-Mayta18/5-segundos-App/actions/workflows/flutter_ci.yml)
 ![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter&logoColor=white)
 ![Dart](https://img.shields.io/badge/Dart-3.x-0175C2?logo=dart&logoColor=white)
 ![Platform](https://img.shields.io/badge/Plataforma-Android%20%7C%20Web-00E676)
 ![Offline First](https://img.shields.io/badge/Arquitectura-100%25%20Offline-FF2A85)
+[![License: MIT](https://img.shields.io/badge/License-MIT-FFD600.svg)](LICENSE)
 
 **Reto 5 Segundos** es un juego social dinámico, presencial y de respuesta rápida diseñado para reuniones de amigos o familia. Convierte un solo smartphone en el animador de la mesa, desafiando a los participantes a mencionar **3 cosas en menos de 5 segundos** bajo intensa presión auditiva y visual.
 
@@ -16,6 +18,31 @@
 - **🔔 Veredicto democrático del grupo:** Al sonar la campana de fin de tiempo, el grupo decide si el jugador logró decir las 3 respuestas válidas a tiempo (`+1 punto`) o si falló.
 - **🎡 Ruleta Neón de Castigos / Retos:** Cuando alguien falla los 5 segundos, gira la ruleta interactiva de 8 categorías con más de **60 retos** configurables en modo **🎭 Sano / Familiar** o **🍻 Fiesta / Tragos (+18)**.
 - **🔀 Barajado continuo sin repetición:** Algoritmo *Fisher-Yates* (`ContinuousDeckShuffler`) que garantiza que ninguna carta se repita durante toda la sesión hasta agotar el 100% del repertorio activo.
+
+---
+
+## 🔄 Flujo de Juego y Dinámica (Diagrama)
+
+```mermaid
+flowchart TD
+    A["🚀 Inicio Sin Fricción (Menú Principal)"] --> B["🃏 Selección de Mazos Temáticos (+220 Cartas)"]
+    B --> C{"¿Mazo Prémium Bloqueado?"}
+    C -- "Sí" --> D["🎬 Ver Video Corto (Rewarded Ad) o Activar PRO"]
+    D --> E["🎮 Elegir Modo de Juego"]
+    C -- "No (Gratis o Desbloqueado)" --> E
+    E -- "Modo Competitivo" --> F["👥 Registro de Jugadores (2-12) y Meta (3-10 pts)"]
+    E -- "Modo Rápido / Casual" --> G["⚡ Ronda Continua Sin Registro"]
+    F --> H["⏱️ Turno Activo: ¡5.0 Segundos! (Tic-Tac Acelerado)"]
+    G --> H
+    H --> I["🔔 ¡Tiempo Agotado! Veredicto del Grupo"]
+    I -- "✅ ¡Lo Logró!" --> J["+1 Punto / Racha de Aciertos"]
+    I -- "❌ ¡Falló!" --> K["🎡 Girar Ruleta Neón de Castigos (Familiar o +18)"]
+    K --> L["Siguiente Jugador en la Mesa"]
+    J --> M{"¿Alcanzó la Meta?"}
+    M -- "No" --> L
+    L --> H
+    M -- "Sí" --> N["🏆 Podio de Campeón y Tabla de Posiciones"]
+```
 
 ---
 
@@ -121,6 +148,14 @@ flutter build appbundle --release
 # Generar APK instalable directo
 flutter build apk --release
 ```
+
+---
+
+## 📄 Documentación Legal y Versiones
+
+- **[Política de Privacidad (Google Play Store)](PRIVACY_POLICY.md)**
+- **[Historial de Versiones (Changelog)](CHANGELOG.md)**
+- **[Licencia MIT](LICENSE)**
 
 ---
 
